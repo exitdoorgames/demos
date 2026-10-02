@@ -18,7 +18,6 @@
   .thumb span { position: absolute; inset: 0; display: grid; place-items: center; color: #a1a1aa; font-size: .9rem; }
   .meta { padding: .7rem .9rem; }
   .meta strong { display: block; }
-  .meta small { opacity: .6; }
   .muted { opacity: .6; }
 </style>
 </head>
@@ -35,9 +34,8 @@
     const a = document.createElement('a');
     a.className = 'tile';
     a.href = path;
-    a.innerHTML = '<div class="thumb"><span>No preview</span></div><div class="meta"><strong></strong><small></small></div>';
+    a.innerHTML = '<div class="thumb"><span>No preview</span></div><div class="meta"><strong></strong></div>';
     a.querySelector('strong').textContent = name;
-    a.querySelector('small').textContent = path;
 
     // Insert the image immediately (lazy images never load while detached in
     // some browsers, e.g. Safari); it covers the "No preview" label, and is
