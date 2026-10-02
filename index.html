@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exit Door Games — Demos</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 720px; margin: 3rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.5rem; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .3rem 0; }
+  .muted { opacity: .6; }
+</style>
+</head>
+<body>
+<h1>Demos</h1>
+<ul id="list"><li class="muted">Loading…</li></ul>
+<script>
+  // Lists every .html file in the repo (except index.html) via the GitHub API.
+  fetch('https://api.github.com/repos/exitdoorgames/demos/git/trees/main?recursive=1')
+    .then(r => r.json())
+    .then(({ tree }) => {
+      const files = tree
+        .filter(f => f.type === 'blob' && f.path.endsWith('.html') && !f.path.endsWith('index.html'))
+        .map(f => f.path)
+        .sort();
+      const list = document.getElementById('list');
+      list.innerHTML = files.length ? '' : '<li class="muted">No demos yet.</li>';
+      for (const path of files) {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.href = path;
+        a.textContent = path.replace(/\.html$/, '');
+        li.append(a);
+        list.append(li);
+      }
+    })
+    .catch(() => {
+      document.getElementById('list').innerHTML = '<li class="muted">Could not load list.</li>';
+    });
+</script>
+</body>
+</html>
