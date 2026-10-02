@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Broken Moon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#17131b;
+    --panel:rgba(23,19,27,.8);
+    --paper:#efe6d2;
+    --muted:#bfb39a;
+    --gilt:#c9a24a;
+    --gilt-hi:#f1d27c;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:#000;color:var(--paper);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-tap-highlight-color:transparent}
+  canvas#scene{display:block;width:100vw;height:100vh;touch-action:none;outline:none}
+  #panel{position:fixed;left:50%;bottom:max(16px,env(safe-area-inset-bottom));transform:translateX(-50%);
+    width:min(30rem,calc(100vw - 24px));padding:16px 18px 16px;background:var(--panel);
+    border:1px solid rgba(201,162,74,.4);border-radius:4px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+    transition:opacity .45s ease}
+  #panel.hidden{opacity:0;pointer-events:none}
+  #panel h1{font-family:"IM Fell English",Georgia,serif;font-weight:400;font-style:italic;font-size:1.55rem;
+    line-height:1.15;margin:0 0 6px;color:var(--gilt-hi)}
+  #panel p{margin:0;font-size:.95rem;line-height:1.45;color:var(--paper);max-width:62ch}
+  #panel p.hint{margin-top:8px;color:var(--muted);font-size:.85rem}
+  .row{display:flex;align-items:center;gap:14px;margin-top:14px;flex-wrap:wrap}
+  button{font:inherit;font-size:.95rem;cursor:pointer;border-radius:3px}
+  .primary{background:var(--gilt);color:var(--ink);border:none;padding:9px 16px;font-weight:600}
+  .primary:hover{background:var(--gilt-hi)}
+  button:focus-visible{outline:2px solid var(--gilt-hi);outline-offset:3px}
+  #meter{flex:1;min-width:130px;display:none}
+  #meter span{display:block;font-size:.78rem;color:var(--muted);margin-bottom:5px}
+  #meter .track{height:5px;background:rgba(239,230,210,.15);border-radius:3px;overflow:hidden}
+  #meter .fill{height:100%;width:0;background:linear-gradient(90deg,#8a6d2c,var(--gilt-hi));transition:box-shadow .3s}
+  #meter.hot .fill{box-shadow:0 0 12px var(--gilt-hi)}
+  #sound{position:fixed;top:max(12px,env(safe-area-inset-top));right:12px;background:var(--panel);color:var(--paper);
+    border:1px solid rgba(201,162,74,.35);padding:6px 11px;font-size:.8rem}
+  #flash{position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 50% 40%,rgba(255,238,190,.9),rgba(255,238,190,0) 60%);opacity:0;transition:opacity .5s}
+  #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#14110f;color:var(--gilt-hi);
+    font-family:"IM Fell English",Georgia,serif;font-style:italic;font-size:1.4rem;transition:opacity .6s}
+  #loading.done{opacity:0;pointer-events:none}
+  @media (prefers-reduced-motion: reduce){ #panel{transition:none} }
+</style>
+</head>
+<body>
+<canvas id="scene" tabindex="0" aria-label="Gallery with a painting you can step into"></canvas>
+<div id="flash"></div>
+<div id="loading">Hanging the painting…</div>
+<button id="sound" aria-pressed="true">Sound on</button>
+<div id="panel" role="status">
+  <h1 id="ptitle">The Broken Moon</h1>
+  <p id="pbody">Something in this painting's sky has cracked apart. Tap the painting to step inside.</p>
+  <p id="phint" class="hint" hidden></p>
+  <div class="row">
+    <button id="pbtn" class="primary">Step inside</button>
+    <div id="meter" aria-hidden="true"><span>Alignment</span><div class="track"><div class="fill"></div></div></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+setTimeout(() => {
+// ---------- constants ----------
+const W = 4, H = 3, CY = 2.2;                        // painting canvas size and centre height
+const C0 = new THREE.Vector3(0, CY, 5);              // the "threshold" viewpoint the painting is composed from
+const GALLERY_POS = new THREE.Vector3(0, 1.7, 9.5);
+const GALLERY_LOOK = new THREE.Vector3(0, 2.0, 0);
+const ENTRY = new THREE.Vector3(0, 1.6, 2.5);        // where you land inside the painting
+const PSTAR = new THREE.Vector3(3.2, 1.6, -0.5);     // the one spot where the moon lines up
+const MOON = new THREE.Vector3(-6, 14, -50);
+const MOON_R = 5;
+const PITCH = Math.tan(4 * Math.PI / 180);
+const BOUNDS = { x0: -4.5, x1: 4.5, z0: -1.5, z1: 3.5 };
+
+// ---------- seeded random ----------
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const rnd = mulberry32(11);
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp = (a,b,t)=>a+(b-a)*t;
+const easeInOut = t => t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+const easeOut = t => 1-Math.pow(1-t,3);
+
+// ---------- renderer ----------
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.localClippingEnabled = true;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#14110f');
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.05, 400);
+camera.position.copy(GALLERY_POS);
+const lookTarget = GALLERY_LOOK.clone();
+function fitCamera(){
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth/innerHeight;
+  camera.fov = camera.aspect < 0.8 ? 62 : 50;
+  camera.updateProjectionMatrix();
+}
+fitCamera();
+addEventListener('resize', fitCamera);
+
+// Clip planes keep the flat painting inside its frame. Pushing them far away "un-frames" the world.
+const clipPlanes = [
+  new THREE.Plane(new THREE.Vector3( 1,0,0), W/2),
+  new THREE.Plane(new THREE.Vector3(-1,0,0), W/2),
+  new THREE.Plane(new THREE.Vector3(0, 1,0), -(CY-H/2)),
+  new THREE.Plane(new THREE.Vector3(0,-1,0), CY+H/2),
+];
+const clipBase = clipPlanes.map(p=>p.constant);
+function setClip(on){ clipPlanes.forEach((p,i)=> p.constant = on ? clipBase[i] : 1e6); }
+
+// ---------- world items: every object knows its deep 3D position; flat = projected onto canvas from C0 ----------
+const worldItems = [];
+let inflate = 0;
+const tmpV = new THREE.Vector3();
+function addItem(holder, deep, is3D){
+  const sFlat = (C0.z - 0) / (C0.z - deep.z);
+  worldItems.push({ holder, deep, is3D, sFlat });
+}
+function setInflate(p){
+  inflate = p;
+  for (const it of worldItems){
+    const s = lerp(it.sFlat, 1, p);
+    it.holder.position.copy(C0).addScaledVector(tmpV.subVectors(it.deep, C0), s);
+    const sq = it.is3D ? lerp(0.012, 1, p) : 1;
+    it.holder.scale.set(s, s, s*sq);
+  }
+}
+const orderFor = z => 200 + z*2;
+
+// ---------- painterly canvas helpers ----------
+function brushify(ctx, cw, ch, o){
+  const data = ctx.getImageData(0,0,cw,ch).data;
+  const n = Math.floor(cw*ch/(o.len*o.width)*(o.density||1.2));
+  ctx.save(); ctx.globalCompositeOperation='source-atop'; ctx.lineCap='round';
+  for (let i=0;i<n;i++){
+    const x=rnd()*cw, y=rnd()*ch, id=((y|0)*cw+(x|0))*4;
+    if (data[id+3]<40) continue;
+    const j=(rnd()-.5)*o.jitter, k=o.jitter*.5;
+    const r=clamp(data[id]+j+(rnd()-.5)*k,0,255), g=clamp(data[id+1]+j+(rnd()-.5)*k,0,255), b=clamp(data[id+2]+j+(rnd()-.5)*k,0,255);
+    ctx.globalAlpha = .3+rnd()*.45;
+    ctx.strokeStyle = `rgb(${r|0},${g|0},${b|0})`;
+    ctx.lineWidth = o.width*(.5+rnd());
+    const a=(o.angle||0)+(rnd()-.5)*(o.angleVar??.6), l=o.len*(.5+rnd());
+    const dx=Math.cos(a)*l/2, dy=Math.sin(a)*l/2;
+    ctx.beginPath(); ctx.moveTo(x-dx,y-dy);
+    ctx.quadraticCurveTo(x+(rnd()-.5)*l*.35, y+(rnd()-.5)*l*.35, x+dx, y+dy); ctx.stroke();
+  }
+  ctx.restore();
+}
+function vgrad(ctx,T,yTop,yBot,stops){
+  const g=ctx.createLinearGradient(0,T.y(yTop),0,T.y(yBot));
+  stops.forEach(([o,c])=>g.addColorStop(o,c)); return g;
+}
+function profilePath(ctx,T,f){
+  ctx.beginPath(); ctx.moveTo(T.x(T.x0),T.y(T.y0));
+  const step=(T.x1-T.x0)/500;
+  for(let x=T.x0;x<=T.x1+1e-6;x+=step) ctx.lineTo(T.x(x),T.y(f(x)));
+  ctx.lineTo(T.x(T.x1),T.y(T.y0)); ctx.closePath();
+}
+
+const layerMats = {};
+function makeLayer(name,{z,x0,x1,y0,y1,maxPx=2048,draw}){
+  const w=x1-x0,h=y1-y0, ppu=Math.min(maxPx/w,maxPx/h,64);
+  const cw=Math.round(w*ppu), ch=Math.round(h*ppu);
+  const cv=document.createElement('canvas'); cv.width=cw; cv.height=ch;
+  const ctx=cv.getContext('2d');
+  const T={x:x=>(x-x0)*ppu, y:y=>(y1-y)*ppu, s:v=>v*ppu, ppu,cw,ch,x0,x1,y0,y1};
+  draw(ctx,T);
+  const tex=new THREE.CanvasTexture(cv); tex.anisotropy=renderer.capabilities.getMaxAnisotropy();
+  const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,depthTest:false,depthWrite:false,clippingPlanes:clipPlanes});
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(w,h),mat);
+  mesh.renderOrder=orderFor(z);
+  const holder=new THREE.Object3D(); holder.add(mesh); scene.add(holder);
+  addItem(holder,new THREE.Vector3((x0+x1)/2,(y0+y1)/2,z),false);
+  layerMats[name]=mat;
+  return {mat,tex};
+}
+
+// ---------- the painting's layers (an original landscape) ----------
+makeLayer('sky',{z:-80,x0:-110,x1:110,y0:-30,y1:80,draw(ctx,T){
+  ctx.fillStyle=vgrad(ctx,T,62,-6,[[0,'#3b6798'],[.42,'#84afcc'],[.78,'#d6e1d4'],[1,'#f0d9a9']]);
+  ctx.fillRect(0,0,T.cw,T.ch);
+  const sg=ctx.createRadialGradient(T.x(38),T.y(1),0,T.x(38),T.y(1),T.s(42));
+  sg.addColorStop(0,'rgba(255,226,166,.55)'); sg.addColorStop(1,'rgba(255,226,166,0)');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,T.cw,T.ch);
+  brushify(ctx,T.cw,T.ch,{len:46,width:11,jitter:26,angle:0,angleVar:.5,density:1.6});
+}});
+
+const cloudLayer = makeLayer('clouds',{z:-60,x0:-90,x1:90,y0:2,y1:38,draw(ctx,T){
+  const clouds=[[-18,16,6],[6,11.5,5],[22,18,5.5],[-40,11,6],[42,24,7],[-62,20,6],[65,13,6],[2,29,6],[-30,27,4.5]];
+  for(const [cx,cy,s] of clouds){
+    const puffs=10+(rnd()*6|0);
+    for(let i=0;i<puffs;i++){
+      const px=cx+(rnd()-.5)*s*2.2, py=cy+(rnd()-.3)*s*.5, r=s*(.35+rnd()*.4);
+      ctx.fillStyle='#f6f1e7'; ctx.beginPath(); ctx.ellipse(T.x(px),T.y(py),T.s(r*1.3),T.s(r*.8),0,0,Math.PI*2); ctx.fill();
+    }
+    ctx.fillStyle='rgba(176,184,204,.55)';
+    for(let i=0;i<5;i++){ ctx.beginPath(); ctx.ellipse(T.x(cx+(rnd()-.5)*s*1.8),T.y(cy-s*.32),T.s(s*.7),T.s(s*.18),0,0,Math.PI*2); ctx.fill(); }
+  }
+  brushify(ctx,T.cw,T.ch,{len:22,width:7,jitter:22,angle:0,angleVar:1.2,density:2});
+}});
+cloudLayer.tex.wrapS = THREE.RepeatWrapping; cloudLayer.tex.needsUpdate = true;
+
+const mtn = x=>5+3.5*Math.sin(x*.09+.5)+2*Math.sin(x*.23+2)+Math.sin(x*.6);
+makeLayer('mountains',{z:-45,x0:-60,x1:60,y0:-30,y1:14,draw(ctx,T){
+  profilePath(ctx,T,mtn);
+  ctx.fillStyle=vgrad(ctx,T,11,-2,[[0,'#8e9cc4'],[.6,'#a7aed0'],[1,'#c9c6d2']]); ctx.fill();
+  ctx.save(); profilePath(ctx,T,mtn); ctx.clip();
+  ctx.beginPath(); ctx.moveTo(T.x(T.x0),0);
+  for(let x=T.x0;x<=T.x1;x+=.5) ctx.lineTo(T.x(x),T.y(8.2+.7*Math.sin(x*.8)+.3*Math.sin(x*2.1)));
+  ctx.lineTo(T.x(T.x1),0); ctx.closePath(); ctx.fillStyle='#eeeaf2'; ctx.fill(); ctx.restore();
+  brushify(ctx,T.cw,T.ch,{len:26,width:8,jitter:22,angle:-.8,angleVar:1.4,density:1.6});
+}});
+
+const mid = x=>1.4+1.1*Math.sin(x*.13+1)+.6*Math.sin(x*.37+.3);
+makeLayer('mid',{z:-25,x0:-36,x1:36,y0:-25,y1:5,draw(ctx,T){
+  profilePath(ctx,T,mid);
+  ctx.fillStyle=vgrad(ctx,T,3,-3,[[0,'#a2bd70'],[1,'#7a9f55']]); ctx.fill();
+  ctx.save(); profilePath(ctx,T,mid); ctx.clip();
+  const fc=['#cbb95e','#aac163','#8dac53','#d6c47c'];
+  for(let i=0;i<70;i++){ const x=T.x0+rnd()*(T.x1-T.x0), y=mid(x)-.4-rnd()*3.2;
+    ctx.globalAlpha=.65; ctx.fillStyle=fc[i%4]; ctx.beginPath();
+    ctx.ellipse(T.x(x),T.y(y),T.s(2+rnd()*4),T.s(.25+rnd()*.45),(rnd()-.5)*.25,0,Math.PI*2); ctx.fill(); }
+  ctx.restore(); ctx.globalAlpha=1;
+  for(let x=T.x0+1;x<T.x1;x+=2+rnd()*4){ if(rnd()<.55){ ctx.fillStyle='#517640';
+    ctx.beginPath(); ctx.ellipse(T.x(x),T.y(mid(x)+.45),T.s(.32),T.s(.95),0,0,Math.PI*2); ctx.fill(); } }
+  brushify(ctx,T.cw,T.ch,{len:20,width:6,jitter:24,angle:0,angleVar:1,density:1.6});
+}});
+
+const near = x=>.55+.35*Math.sin(x*.22+2)+.2*Math.sin(x*.55+1)+.5*Math.exp(-Math.pow((x-2)/5,2));
+makeLayer('near',{z:-12,x0:-22,x1:22,y0:-20,y1:2.5,draw(ctx,T){
+  profilePath(ctx,T,near);
+  ctx.fillStyle=vgrad(ctx,T,1.6,-2,[[0,'#6f9b46'],[1,'#476f2f']]); ctx.fill();
+  ctx.strokeStyle='#3c652b'; ctx.lineWidth=T.s(.22); ctx.beginPath();
+  for(let x=T.x0;x<=T.x1;x+=.2) ctx.lineTo(T.x(x),T.y(near(x)-.6-.15*Math.sin(x*1.3)));
+  ctx.stroke();
+  for(let i=0;i<260;i++){ const x=T.x0+rnd()*(T.x1-T.x0), y=near(x)-rnd()*1.8;
+    ctx.fillStyle=rnd()<.6?'#e9cf5a':'#f3efe0'; ctx.beginPath(); ctx.arc(T.x(x),T.y(y),T.s(.03+rnd()*.04),0,Math.PI*2); ctx.fill(); }
+  brushify(ctx,T.cw,T.ch,{len:24,width:7,jitter:24,angle:0,angleVar:1.1,density:1.5});
+}});
+
+const fg = x=>.38+.15*Math.sin(x*.9)+.1*Math.sin(x*2.3+1);
+makeLayer('fg',{z:-4,x0:-13,x1:13,y0:-14,y1:1.4,draw(ctx,T){
+  profilePath(ctx,T,fg);
+  ctx.fillStyle=vgrad(ctx,T,.5,-1.5,[[0,'#4b7b35'],[1,'#25421e']]); ctx.fill();
+  ctx.lineCap='round';
+  const gc=['#5d8d3d','#3f6b2c','#7aa64c','#33592a'];
+  for(let i=0;i<2600;i++){ const x=T.x0+rnd()*(T.x1-T.x0), by=fg(x)-rnd()*.35, l=.15+rnd()*.45, a=-Math.PI/2+(rnd()-.5)*.7;
+    ctx.strokeStyle=gc[i%4]; ctx.lineWidth=T.s(.012+rnd()*.02); ctx.beginPath();
+    ctx.moveTo(T.x(x),T.y(by)); ctx.lineTo(T.x(x+Math.cos(a)*l),T.y(by-Math.sin(a)*l)); ctx.stroke(); }
+  const flc=['#d9573b','#f0c94a','#f4efe2','#c04a6a'];
+  for(let i=0;i<180;i++){ const x=T.x0+rnd()*(T.x1-T.x0), y=fg(x)+.05-rnd()*.5;
+    ctx.fillStyle=flc[i%4]; ctx.beginPath(); ctx.arc(T.x(x),T.y(y),T.s(.035+rnd()*.05),0,Math.PI*2); ctx.fill(); }
+  brushify(ctx,T.cw,T.ch,{len:16,width:5,jitter:22,angle:-Math.PI/2,angleVar:.8,density:.9});
+}});
+
+// ---------- 3D props that unfold out of the canvas ----------
+const hemi = new THREE.HemisphereLight('#e2ecff','#4a5a2a',.75); scene.add(hemi);
+const sun = new THREE.DirectionalLight('#fff1d6',.9); sun.position.set(-5,10,6); scene.add(sun);
+
+function propMat(color){ return new THREE.MeshPhongMaterial({color,flatShading:true,shininess:4,transparent:true,clippingPlanes:clipPlanes}); }
+function decalMat(color){ return new THREE.MeshBasicMaterial({color,transparent:true,depthTest:false,clippingPlanes:clipPlanes}); }
+
+const house = new THREE.Group();
+{
+  const ord=orderFor(-18);
+  const body=new THREE.Mesh(new THREE.BoxGeometry(2.6,2.4,2.2),propMat('#e8d9b8')); house.add(body);
+  const shape=new THREE.Shape(); shape.moveTo(-1.55,0); shape.lineTo(1.55,0); shape.lineTo(0,1.2); shape.closePath();
+  const rg=new THREE.ExtrudeGeometry(shape,{depth:2.6,bevelEnabled:false}); rg.translate(0,0,-1.3);
+  const roof=new THREE.Mesh(rg,propMat('#b5583a')); roof.position.y=1.2; house.add(roof);
+  const chim=new THREE.Mesh(new THREE.BoxGeometry(.3,.8,.3),propMat('#8e4a35')); chim.position.set(.75,1.95,-.4); house.add(chim);
+  [body,roof,chim].forEach(m=>m.renderOrder=ord);
+  const door=new THREE.Mesh(new THREE.PlaneGeometry(.5,.8),decalMat('#5a3a26')); door.position.set(-.6,.15,1.11);
+  const win=new THREE.Mesh(new THREE.PlaneGeometry(.5,.45),decalMat('#f2d27a')); win.position.set(.6,.4,1.11);
+  const gwin=new THREE.Mesh(new THREE.CircleGeometry(.18,20),decalMat('#f2d27a')); gwin.position.set(0,1.62,1.31);
+  [door,win,gwin].forEach(m=>{m.renderOrder=ord+.5; house.add(m);});
+  house.userData.windows=[win.material,gwin.material];
+}
+scene.add(house); addItem(house,new THREE.Vector3(2.4,1.2,-18),true);
+
+const tree = new THREE.Group();
+{
+  const ord=orderFor(-7);
+  const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.12,.2,3.4,7),propMat('#5b3f2a')); trunk.position.y=-1.4; tree.add(trunk);
+  const blobs=[[0,.9,0,1.3,'#4f7d36'],[-.75,.35,.3,.9,'#5f8f3e'],[.8,.5,-.2,1.0,'#41692e'],[.1,1.75,.1,.9,'#6a9a45'],[-.3,.15,-.6,.8,'#3a5f2a']];
+  for(const [x,y,z,r,c] of blobs){ const m=new THREE.Mesh(new THREE.IcosahedronGeometry(r,1),propMat(c)); m.position.set(x,y,z); tree.add(m); }
+  tree.children.forEach(m=>m.renderOrder=ord);
+}
+scene.add(tree); addItem(tree,new THREE.Vector3(-3.2,2.0,-7),true);
+
+// ---------- the broken moon: three arcs at different depths that only line up from PSTAR ----------
+function texCanvas(S,fn){ const cv=document.createElement('canvas'); cv.width=cv.height=S; fn(cv.getContext('2d'),S); return new THREE.CanvasTexture(cv); }
+const FRAG_SIDE = 13;
+const frags = [];
+[-50,-33,-20].forEach((z,k)=>{
+  const t=(PSTAR.z-z)/(PSTAR.z-MOON.z);
+  const pos=PSTAR.clone().addScaledVector(tmpV.subVectors(MOON,PSTAR),t);
+  const tex=texCanvas(512,(ctx,S)=>{
+    const ppu=S/FRAG_SIDE, c=S/2, r=MOON_R*ppu, th=1.0*ppu;
+    const a0=-Math.PI/2+k*2*Math.PI/3-.012, a1=a0+2*Math.PI/3+.024;
+    ctx.lineCap='butt'; ctx.shadowColor='rgba(255,214,120,.95)'; ctx.shadowBlur=26;
+    ctx.strokeStyle='#f0c766'; ctx.lineWidth=th; ctx.beginPath(); ctx.arc(c,c,r,a0,a1); ctx.stroke();
+    ctx.shadowBlur=0; ctx.strokeStyle='rgba(255,246,214,.85)'; ctx.lineWidth=th*.28;
+    ctx.beginPath(); ctx.arc(c,c,r-th*.12,a0+.02,a1-.02); ctx.stroke();
+  });
+  const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,depthTest:false,depthWrite:false,clippingPlanes:clipPlanes,opacity:.95});
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(FRAG_SIDE*t,FRAG_SIDE*t),mat); mesh.renderOrder=orderFor(z)+.2;
+  const holder=new THREE.Object3D(); holder.add(mesh); scene.add(holder);
+  addItem(holder,pos,false); frags.push(mat);
+});
+const moonMat=new THREE.MeshBasicMaterial({transparent:true,depthTest:false,depthWrite:false,clippingPlanes:clipPlanes,opacity:0,
+  map:texCanvas(512,(ctx,S)=>{
+    const side=18, ppu=S/side, c=S/2, r=(MOON_R-.25)*ppu;
+    const g=ctx.createRadialGradient(c,c,r*.9,c,c,S/2); g.addColorStop(0,'rgba(255,236,190,.6)'); g.addColorStop(1,'rgba(255,236,190,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,S,S);
+    ctx.fillStyle='#f5ecca'; ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fill();
+    ctx.save(); ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.clip();
+    for(let i=0;i<9;i++){ ctx.fillStyle='rgba(205,190,150,.45)'; ctx.beginPath();
+      ctx.ellipse(c+(rnd()-.5)*r*1.4,c+(rnd()-.5)*r*1.4,r*(.08+rnd()*.14),r*(.06+rnd()*.1),rnd()*3,0,Math.PI*2); ctx.fill(); }
+    ctx.restore();
+    brushify(ctx,S,S,{len:14,width:5,jitter:18,angleVar:3,density:1.2});
+  })});
+{
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(18,18),moonMat); mesh.renderOrder=orderFor(-50)+.5;
+  const holder=new THREE.Object3D(); holder.add(mesh); scene.add(holder); addItem(holder,MOON.clone(),false);
+}
+
+// fireflies, only in the deep world after the moon is fixed
+const FF=70, ffBase=[];
+const ffGeo=new THREE.BufferGeometry(); const ffPos=new Float32Array(FF*3);
+for(let i=0;i<FF;i++){ ffBase.push([lerp(-9,9,rnd()),lerp(.4,3,rnd()),lerp(-14,-3,rnd()),rnd()*6.28]); }
+ffGeo.setAttribute('position',new THREE.BufferAttribute(ffPos,3));
+const ffDot=texCanvas(64,(ctx,S)=>{const g=ctx.createRadialGradient(S/2,S/2,0,S/2,S/2,S/2);g.addColorStop(0,'rgba(255,255,255,1)');g.addColorStop(.35,'rgba(255,240,180,.8)');g.addColorStop(1,'rgba(255,240,180,0)');ctx.fillStyle=g;ctx.fillRect(0,0,S,S);});
+const ffMat=new THREE.PointsMaterial({color:'#ffe7a0',map:ffDot,size:.22,transparent:true,opacity:0,depthTest:false,blending:THREE.AdditiveBlending});
+const fireflies=new THREE.Points(ffGeo,ffMat); fireflies.renderOrder=199; fireflies.visible=false; scene.add(fireflies);
+
+setInflate(0);
+
+// ---------- gallery room ----------
+const gallery=new THREE.Group(); scene.add(gallery);
+const galleryMats=[];
+function gMat(opts,basic){ const m=basic?new THREE.MeshBasicMaterial(opts):new THREE.MeshLambertMaterial(opts); m.transparent=true; galleryMats.push(m); return m; }
+function gBox(w,h,d,mat,x,y,z){ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat); m.position.set(x,y,z); m.renderOrder=1000; gallery.add(m); return m; }
+function gPlane(w,h,mat,x,y,z,ry=0,rx=0){ const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),mat); m.position.set(x,y,z); m.rotation.set(rx,ry,0); m.renderOrder=1000; gallery.add(m); return m; }
+
+const floorTex=texCanvas(1024,(ctx,S)=>{
+  ctx.fillStyle='#5e4029'; ctx.fillRect(0,0,S,S);
+  const pw=S/8;
+  for(let i=0;i<8;i++){ ctx.fillStyle=`hsl(26,${32+rnd()*10}%,${22+rnd()*7}%)`; ctx.fillRect(i*pw+2,0,pw-4,S);
+    for(let k=0;k<40;k++){ ctx.strokeStyle='rgba(30,18,10,.18)'; ctx.lineWidth=1+rnd()*2; const x=i*pw+4+rnd()*(pw-8);
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.bezierCurveTo(x+(rnd()-.5)*10,S*.3,x+(rnd()-.5)*10,S*.7,x,S); ctx.stroke(); }
+    ctx.fillStyle='rgba(20,12,6,.6)'; ctx.fillRect(i*pw+2,(rnd()*S)|0,pw-4,3); }
+});
+floorTex.wrapS=floorTex.wrapT=THREE.RepeatWrapping; floorTex.repeat.set(3,3);
+const wallMat=gMat({color:'#2f4c45'});
+const trimMat=gMat({color:'#3a2a1d'});
+const gold=gMat({color:'#9c7a34',emissive:'#120c02'});
+gPlane(14,12,gMat({map:floorTex}),0,0,6,0,-Math.PI/2);
+gPlane(14,12,gMat({color:'#1f2a27'}),0,5,6,0,Math.PI/2);
+// front wall with a hole the exact size of the canvas
+gPlane(5,5,wallMat,-4.5,2.5,0); gPlane(5,5,wallMat,4.5,2.5,0);
+gPlane(W,5-(CY+H/2),wallMat,0,(5+CY+H/2)/2,0); gPlane(W,CY-H/2,wallMat,0,(CY-H/2)/2,0);
+gPlane(12,5,wallMat,-7,2.5,6,Math.PI/2); gPlane(12,5,wallMat,7,2.5,6,-Math.PI/2); gPlane(14,5,wallMat,0,2.5,12,Math.PI);
+gBox(14,.22,.06,trimMat,0,.11,.03); gBox(.06,.22,12,trimMat,-6.97,.11,6); gBox(.06,.22,12,trimMat,6.97,.11,6);
+// gilt frame
+const F=.32, D=.16;
+gBox(W+2*F,F,D,gold,0,CY+H/2+F/2-.02,D/2); gBox(W+2*F,F,D,gold,0,CY-H/2-F/2+.02,D/2);
+gBox(F,H,D,gold,-W/2-F/2+.02,CY,D/2); gBox(F,H,D,gold,W/2+F/2-.02,CY,D/2);
+// two covered paintings, for the sense of a hub
+for(const sx of [-1,1]){
+  const x=sx*4.9, w=1.5, h=1.15, f=.14;
+  gBox(w+2*f,f,.1,gold,x,2.2+h/2+f/2,.05); gBox(w+2*f,f,.1,gold,x,2.2-h/2-f/2,.05);
+  gBox(f,h,.1,gold,x-w/2-f/2,2.2,.05); gBox(f,h,.1,gold,x+w/2+f/2,2.2,.05);
+  gPlane(w,h,gMat({color:'#3b3442'}),x,2.2,.03);
+}
+function placardTex(title,line){
+  return texCanvas(512,(ctx,S)=>{
+    ctx.fillStyle='#e6d9bb'; ctx.fillRect(0,0,S,S/2);
+    ctx.fillStyle='#2a2420'; ctx.font='italic 52px Georgia,serif'; ctx.fillText(title,34,108);
+    ctx.font='28px Georgia,serif'; ctx.fillStyle='#5a4e40'; ctx.fillText(line,36,170);
+  });
+}
+const placardMat=gMat({map:placardTex('The Broken Moon','Oil on canvas, maker unknown')},true);
+{ const p=gPlane(1.2,1.2,placardMat,3.05,1.25,.02); p.material.map.repeat.set(1,.5); p.material.map.offset.set(0,.5); p.scale.y=.5; }
+
+const ambient=new THREE.AmbientLight('#ffe8cc',.28); scene.add(ambient);
+const spot=new THREE.SpotLight('#ffd9a0',1.15,16,.55,.7,1); spot.position.set(0,4.8,3.6); spot.target.position.set(0,CY,0);
+scene.add(spot); scene.add(spot.target);
+const bulb=new THREE.PointLight('#ffe2b8',.5,18); bulb.position.set(0,4.4,7); scene.add(bulb);
+
+let galleryO=1;
+function applyLights(){
+  const w=1-.6*galleryO;  // dim the painting's own sunlight while gallery lamps are on
+  hemi.intensity=lerp(.75,.38,dusk)*w; sun.intensity=lerp(.9,.5,dusk)*w;
+  sun.color.setRGB(1,lerp(.94,.72,dusk),lerp(.84,.6,dusk));
+  ambient.intensity=.36*galleryO; spot.intensity=1.15*galleryO; bulb.intensity=.45*galleryO;
+}
+function setGalleryOpacity(o){ galleryO=o; galleryMats.forEach(m=>m.opacity=o); applyLights(); }
+const GALLERY_BG=new THREE.Color('#14110f'), WORLD_BG=new THREE.Color('#d6e1d4');
+
+// ---------- dusk (after solving) ----------
+const duskTargets={sky:[1,.74,.8],clouds:[1,.8,.86],mountains:[.82,.74,.95],mid:[.78,.76,.88],near:[.72,.72,.84],fg:[.66,.68,.8]};
+let dusk=0;
+function setDusk(d){
+  dusk=d;
+  for(const k in duskTargets){ const t=duskTargets[k]; layerMats[k].color.setRGB(lerp(1,t[0],d),lerp(1,t[1],d),lerp(1,t[2],d)); }
+  applyLights();
+  house.userData.windows.forEach(m=>m.color.setRGB(1,lerp(.82,.86,d),lerp(.48,.32,d)));
+}
+
+applyLights();
+
+// ---------- audio ----------
+let actx=null, soundOn=true;
+function ensureAudio(){ try{ if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)(); if(actx.state==='suspended') actx.resume(); }catch(e){} }
+function whoosh(dur,up){
+  if(!actx||!soundOn) return;
+  const len=Math.floor(actx.sampleRate*dur), buf=actx.createBuffer(1,len,actx.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+  const src=actx.createBufferSource(); src.buffer=buf;
+  const f=actx.createBiquadFilter(); f.type='bandpass'; f.Q.value=.9;
+  const g=actx.createGain(), t=actx.currentTime;
+  f.frequency.setValueAtTime(up?260:1600,t); f.frequency.exponentialRampToValueAtTime(up?1600:260,t+dur);
+  g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(.1,t+dur*.45); g.gain.linearRampToValueAtTime(0,t+dur);
+  src.connect(f); f.connect(g); g.connect(actx.destination); src.start(t);
+}
+function chime(){
+  if(!actx||!soundOn) return;
+  [523.25,659.25,783.99,1046.5].forEach((fr,i)=>{
+    const o=actx.createOscillator(), g=actx.createGain(), t=actx.currentTime+i*.16;
+    o.type='sine'; o.frequency.value=fr; g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(.09,t+.03); g.gain.exponentialRampToValueAtTime(.0001,t+1.8);
+    o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t+1.9);
+  });
+}
+const soundBtn=document.getElementById('sound');
+soundBtn.onclick=()=>{ soundOn=!soundOn; soundBtn.textContent=soundOn?'Sound on':'Sound off'; soundBtn.setAttribute('aria-pressed',soundOn); };
+
+// ---------- tweens ----------
+let now=0; const tweens=[];
+function tween(dur,fn,ease=easeInOut){ return new Promise(res=>tweens.push({start:now,dur,fn,ease,res})); }
+function runTweens(){
+  for(let i=tweens.length-1;i>=0;i--){ const tw=tweens[i], k=clamp((now-tw.start)/tw.dur,0,1);
+    tw.fn(tw.ease(k)); if(k>=1){ tweens.splice(i,1); tw.res(); } }
+}
+
+// ---------- UI ----------
+const panel=document.getElementById('panel'), ptitle=document.getElementById('ptitle'), pbody=document.getElementById('pbody'),
+      phint=document.getElementById('phint'), pbtn=document.getElementById('pbtn'), meter=document.getElementById('meter'),
+      meterFill=meter.querySelector('.fill'), flash=document.getElementById('flash');
+function setPanel(title,body,btn,showMeter){
+  ptitle.textContent=title; pbody.textContent=body; pbtn.textContent=btn;
+  meter.style.display=showMeter?'block':'none'; phint.hidden=true; panel.classList.remove('hidden');
+}
+pbtn.onclick=()=>{ ensureAudio(); if(state==='gallery') enterPainting(); else if(state==='explore') exitPainting(); };
+
+// ---------- state ----------
+let state='gallery', solved=false, exploreTime=0, alignHold=0;
+const explorePos=ENTRY.clone();
+
+async function enterPainting(){
+  if(state!=='gallery') return;
+  state='transition'; panel.classList.add('hidden'); canvas.style.cursor='default';
+  const fromPos=camera.position.clone(), fromLook=lookTarget.clone(), threshold=new THREE.Vector3(0,CY,0);
+  await tween(1.7,e=>{ camera.position.lerpVectors(fromPos,C0,e); lookTarget.lerpVectors(fromLook,threshold,e); });
+  setClip(false);
+  whoosh(4.2,true);
+  await tween(1.1,e=>{ setGalleryOpacity(1-e); scene.background.copy(GALLERY_BG).lerp(WORLD_BG,e); },t=>t);
+  gallery.visible=false;
+  await tween(3.2,e=>{
+    setInflate(e);
+    camera.position.lerpVectors(C0,ENTRY,e);
+    lookTarget.copy(camera.position).add(tmpV.set(0,PITCH*e,-1));
+  });
+  explorePos.copy(ENTRY); exploreTime=0; alignHold=0;
+  if(solved){ fireflies.visible=true; tween(1.2,e=>ffMat.opacity=.9*e); }
+  state='explore';
+  if(solved) setPanel('Inside the painting','The moon is whole. Wander around, or step out when you are ready.','Step out',false);
+  else setPanel('Inside the painting','Drag to move, or use WASD. The moon has split into pieces that sit at different depths. Find the one spot where they line up.','Step out',true);
+}
+
+async function exitPainting(){
+  if(state!=='explore') return;
+  state='transition'; panel.classList.add('hidden');
+  const from=camera.position.clone();
+  whoosh(3.6,false);
+  if(fireflies.visible) tween(.8,e=>ffMat.opacity=.9*(1-e)).then(()=>fireflies.visible=false);
+  await tween(2.8,e=>{
+    setInflate(1-e);
+    camera.position.lerpVectors(from,C0,e);
+    lookTarget.copy(camera.position).add(tmpV.set(0,PITCH*(1-e),-1));
+  });
+  gallery.visible=true;
+  await tween(1.1,e=>{ setGalleryOpacity(e); scene.background.copy(WORLD_BG).lerp(GALLERY_BG,e); },t=>t);
+  setClip(true);
+  const threshold=new THREE.Vector3(0,CY,0);
+  await tween(1.7,e=>{ camera.position.lerpVectors(C0,GALLERY_POS,e); lookTarget.lerpVectors(threshold,GALLERY_LOOK,e); });
+  state='gallery'; galleryOffset.set(0,0);
+  if(solved) setPanel('The Whole Moon','The painting now holds what you fixed inside it. Tap it to step back in.','Step inside',false);
+  else setPanel('The Broken Moon','The moon is still in pieces. Tap the painting to step back in.','Step inside',false);
+}
+
+async function solve(){
+  state='solving'; solved=true; meterFill.style.width='100%';
+  const from=explorePos.clone();
+  await tween(.35,e=>{ explorePos.lerpVectors(from,PSTAR,e); camera.position.copy(explorePos); lookTarget.copy(explorePos).add(tmpV.set(0,PITCH,-1)); });
+  chime(); flash.style.opacity='.55'; setTimeout(()=>flash.style.opacity='0',380);
+  fireflies.visible=true;
+  await tween(2.6,e=>{
+    frags.forEach(m=>m.opacity=1-e); moonMat.opacity=e; setDusk(e); ffMat.opacity=.9*e;
+  });
+  placardMat.map=placardTex('The Whole Moon','Restored by you'); placardMat.map.repeat.set(1,.5); placardMat.map.offset.set(0,.5); placardMat.needsUpdate=true;
+  state='explore';
+  setPanel('The moon is whole','You found the viewpoint. Step out to see how the painting has changed.','Step out',false);
+}
+
+// ---------- input ----------
+const keys=new Set();
+addEventListener('keydown',e=>{ keys.add(e.key.toLowerCase()); if(e.key==='Enter'&&state==='gallery'){ensureAudio();enterPainting();} });
+addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
+let dragging=false, downX=0, downY=0, lastX=0, lastY=0, moved=0;
+const galleryOffset=new THREE.Vector2(), galleryOffsetTarget=new THREE.Vector2();
+const raycaster=new THREE.Raycaster(), ndc=new THREE.Vector2();
+function hitPainting(cx,cy){
+  ndc.set(cx/innerWidth*2-1,-(cy/innerHeight)*2+1); raycaster.setFromCamera(ndc,camera);
+  const r=raycaster.ray; if(Math.abs(r.direction.z)<1e-5) return false;
+  const t=-r.origin.z/r.direction.z; if(t<0) return false;
+  const p=r.origin.clone().addScaledVector(r.direction,t);
+  return Math.abs(p.x)<=W/2+.25 && Math.abs(p.y-CY)<=H/2+.25;
+}
+canvas.addEventListener('pointerdown',e=>{ dragging=true; moved=0; downX=lastX=e.clientX; downY=lastY=e.clientY; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove',e=>{
+  if(state==='gallery'){
+    galleryOffsetTarget.set(e.clientX/innerWidth*2-1, e.clientY/innerHeight*2-1);
+    canvas.style.cursor=hitPainting(e.clientX,e.clientY)?'pointer':'default';
+  }
+  if(!dragging) return;
+  const dx=e.clientX-lastX, dy=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY; moved+=Math.abs(dx)+Math.abs(dy);
+  if(state==='explore'){
+    explorePos.x=clamp(explorePos.x+dx*8/innerWidth,BOUNDS.x0,BOUNDS.x1);
+    explorePos.z=clamp(explorePos.z+dy*6/innerHeight,BOUNDS.z0,BOUNDS.z1);
+  }
+});
+function endDrag(e){
+  if(!dragging) return; dragging=false;
+  if(state==='gallery' && moved<10 && hitPainting(e.clientX,e.clientY)){ ensureAudio(); enterPainting(); }
+}
+canvas.addEventListener('pointerup',endDrag);
+canvas.addEventListener('pointercancel',()=>dragging=false);
+
+// ---------- loop ----------
+let last=performance.now()/1000;
+function frame(){
+  const t=performance.now()/1000, dt=Math.min(.05,t-last); last=t; now=t;
+  runTweens();
+
+  if(state==='gallery'){
+    galleryOffset.lerp(galleryOffsetTarget,Math.min(1,dt*3));
+    camera.position.set(GALLERY_POS.x+galleryOffset.x*.35, GALLERY_POS.y-galleryOffset.y*.15, GALLERY_POS.z);
+    lookTarget.copy(GALLERY_LOOK);
+  }
+
+  if(state==='explore'){
+    exploreTime+=dt;
+    const sp=2.6*dt;
+    if(keys.has('a')||keys.has('arrowleft')) explorePos.x-=sp;
+    if(keys.has('d')||keys.has('arrowright')) explorePos.x+=sp;
+    if(keys.has('w')||keys.has('arrowup')) explorePos.z-=sp;
+    if(keys.has('s')||keys.has('arrowdown')) explorePos.z+=sp;
+    explorePos.x=clamp(explorePos.x,BOUNDS.x0,BOUNDS.x1); explorePos.z=clamp(explorePos.z,BOUNDS.z0,BOUNDS.z1);
+    const dist=Math.hypot(explorePos.x-PSTAR.x,explorePos.z-PSTAR.z);
+    if(!solved){
+      const idle=!dragging && keys.size===0;
+      if(idle && dist<.5){ const k=Math.min(1,dt*2.8); explorePos.x+=(PSTAR.x-explorePos.x)*k; explorePos.z+=(PSTAR.z-explorePos.z)*k; }
+      const res=clamp(1-dist/4,0,1);
+      meterFill.style.width=(res*100).toFixed(1)+'%';
+      meter.classList.toggle('hot',res>.9);
+      const pulse=.88+.12*Math.sin(t*2.2);
+      frags.forEach(m=>m.opacity=(.7+.3*res*res)*pulse);
+      if(dist<.05){ alignHold+=dt; if(alignHold>.35) solve(); } else alignHold=0;
+      if(exploreTime>35 && phint.hidden){ phint.textContent='Hint: the pieces come together somewhere to your right, a little further in.'; phint.hidden=false; }
+    }
+    camera.position.copy(explorePos);
+    lookTarget.copy(explorePos).add(tmpV.set(0,PITCH,-1));
+  }
+
+  if(fireflies.visible){
+    for(let i=0;i<FF;i++){ const b=ffBase[i];
+      ffPos[i*3]=b[0]+Math.sin(t*.4+b[3])*.4; ffPos[i*3+1]=b[1]+Math.sin(t*.9+b[3]*2)*.25; ffPos[i*3+2]=b[2]+Math.cos(t*.3+b[3])*.4; }
+    ffGeo.attributes.position.needsUpdate=true;
+  }
+  cloudLayer.tex.offset.x=(t*.0016)%1;
+
+  camera.lookAt(lookTarget);
+  renderer.render(scene,camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+document.getElementById('loading').classList.add('done');
+}, 60);
+</script>
+</body>
+</html>

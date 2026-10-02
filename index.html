@@ -5,19 +5,55 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Exit Door Games — Demos</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 16px/1.5 system-ui, sans-serif; max-width: 720px; margin: 3rem auto; padding: 0 1rem; }
+  :root { color-scheme: light dark; --card: #f4f4f5; --border: #e4e4e7; }
+  @media (prefers-color-scheme: dark) { :root { --card: #18181b; --border: #27272a; } }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 1100px; margin: 3rem auto; padding: 0 1rem; }
   h1 { font-size: 1.5rem; }
-  ul { padding-left: 1.2rem; }
-  li { margin: .3rem 0; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.25rem; }
+  .tile { display: block; color: inherit; text-decoration: none; background: var(--card);
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden; transition: transform .15s, box-shadow .15s; }
+  .tile:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+  .thumb { aspect-ratio: 16 / 10; background: linear-gradient(135deg, #3f3f46, #18181b); position: relative; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb span { position: absolute; inset: 0; display: grid; place-items: center; color: #a1a1aa; font-size: .9rem; }
+  .meta { padding: .7rem .9rem; }
+  .meta strong { display: block; }
+  .meta small { opacity: .6; }
   .muted { opacity: .6; }
 </style>
 </head>
 <body>
 <h1>Demos</h1>
-<ul id="list"><li class="muted">Loading…</li></ul>
+<div id="grid"><p class="muted">Loading…</p></div>
 <script>
   // Lists every .html file in the repo (except index.html) via the GitHub API.
+  // Thumbnail for foo/bar.html is read from thumbs/foo/bar.jpg if present.
+  const grid = document.getElementById('grid');
+
+  function tile(path) {
+    const name = path.replace(/\.html$/, '');
+    const a = document.createElement('a');
+    a.className = 'tile';
+    a.href = path;
+    a.innerHTML = '<div class="thumb"><span>No preview</span></div><div class="meta"><strong></strong><small></small></div>';
+    a.querySelector('strong').textContent = name;
+    a.querySelector('small').textContent = path;
+
+    const img = new Image();
+    img.alt = '';
+    img.loading = 'lazy';
+    img.onload = () => a.querySelector('.thumb').replaceChildren(img);
+    img.src = 'thumbs/' + name + '.jpg';
+
+    // Use the page's <title> as the tile heading.
+    fetch(path).then(r => r.text()).then(html => {
+      const title = new DOMParser().parseFromString(html, 'text/html').title.trim();
+      if (title) a.querySelector('strong').textContent = title;
+    }).catch(() => {});
+
+    return a;
+  }
+
   fetch('https://api.github.com/repos/exitdoorgames/demos/git/trees/main?recursive=1')
     .then(r => r.json())
     .then(({ tree }) => {
@@ -25,20 +61,10 @@
         .filter(f => f.type === 'blob' && f.path.endsWith('.html') && !f.path.endsWith('index.html'))
         .map(f => f.path)
         .sort();
-      const list = document.getElementById('list');
-      list.innerHTML = files.length ? '' : '<li class="muted">No demos yet.</li>';
-      for (const path of files) {
-        const li = document.createElement('li');
-        const a = document.createElement('a');
-        a.href = path;
-        a.textContent = path.replace(/\.html$/, '');
-        li.append(a);
-        list.append(li);
-      }
+      grid.replaceChildren(...(files.length ? files.map(tile) : []));
+      if (!files.length) grid.innerHTML = '<p class="muted">No demos yet.</p>';
     })
-    .catch(() => {
-      document.getElementById('list').innerHTML = '<li class="muted">Could not load list.</li>';
-    });
+    .catch(() => { grid.innerHTML = '<p class="muted">Could not load list.</p>'; });
 </script>
 </body>
 </html>
