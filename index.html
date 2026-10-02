@@ -14,7 +14,7 @@
     border: 1px solid var(--border); border-radius: 10px; overflow: hidden; transition: transform .15s, box-shadow .15s; }
   .tile:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.15); }
   .thumb { aspect-ratio: 16 / 10; background: linear-gradient(135deg, #3f3f46, #18181b); position: relative; }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumb span { position: absolute; inset: 0; display: grid; place-items: center; color: #a1a1aa; font-size: .9rem; }
   .meta { padding: .7rem .9rem; }
   .meta strong { display: block; }
@@ -39,11 +39,15 @@
     a.querySelector('strong').textContent = name;
     a.querySelector('small').textContent = path;
 
+    // Insert the image immediately (lazy images never load while detached in
+    // some browsers, e.g. Safari); it covers the "No preview" label, and is
+    // removed if the thumbnail doesn't exist.
     const img = new Image();
     img.alt = '';
     img.loading = 'lazy';
-    img.onload = () => a.querySelector('.thumb').replaceChildren(img);
+    img.onerror = () => img.remove();
     img.src = 'thumbs/' + name + '.jpg';
+    a.querySelector('.thumb').append(img);
 
     // Use the page's <title> as the tile heading.
     fetch(path).then(r => r.text()).then(html => {
