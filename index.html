@@ -25,9 +25,27 @@
 <h1>Demos</h1>
 <div id="grid"><p class="muted">Loading…</p></div>
 <script>
-  // Lists every .html file in the repo (except index.html) via the GitHub API.
+  // Lists every .html file in the repo (except index.html) via the GitHub API,
+  // oldest first by the date each was added.
   // Thumbnail for foo/bar.html is read from thumbs/foo/bar.jpg if present.
+  const API = 'https://api.github.com/repos/exitdoorgames/demos';
   const grid = document.getElementById('grid');
+
+  // Date a file was first committed. Fetches the newest commit for the path;
+  // its Link header points at the last page, which holds the oldest. Cached in
+  // localStorage since it never changes (and the API is rate limited).
+  async function addedDate(path) {
+    const key = 'added:' + path;
+    const cached = localStorage.getItem(key);
+    if (cached) return +cached;
+    let r = await fetch(API + '/commits?per_page=1&path=' + encodeURIComponent(path));
+    const last = r.headers.get('Link')?.match(/<([^>]+)>; rel="last"/);
+    if (last) r = await fetch(last[1]);
+    const [c] = await r.json();
+    const date = Date.parse(c.commit.author.date);
+    localStorage.setItem(key, date);
+    return date;
+  }
 
   function tile(path) {
     const name = path.replace(/\.html$/, '');
@@ -56,13 +74,18 @@
     return a;
   }
 
-  fetch('https://api.github.com/repos/exitdoorgames/demos/git/trees/main?recursive=1')
+  fetch(API + '/git/trees/main?recursive=1')
     .then(r => r.json())
-    .then(({ tree }) => {
-      const files = tree
+    .then(async ({ tree }) => {
+      const paths = tree
         .filter(f => f.type === 'blob' && f.path.endsWith('.html') && !f.path.endsWith('index.html'))
-        .map(f => f.path)
-        .sort();
+        .map(f => f.path);
+      // Files whose date can't be fetched go last, by name.
+      const dates = await Promise.all(paths.map(p => addedDate(p).catch(() => Infinity)));
+      const files = paths
+        .map((path, i) => ({ path, date: dates[i] }))
+        .sort((a, b) => a.date - b.date || a.path.localeCompare(b.path))
+        .map(f => f.path);
       grid.replaceChildren(...(files.length ? files.map(tile) : []));
       if (!files.length) grid.innerHTML = '<p class="muted">No demos yet.</p>';
     })
